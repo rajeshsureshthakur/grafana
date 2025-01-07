@@ -1,0 +1,80 @@
+import javax.net.ssl.*;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.security.cert.X509Certificate;
+
+public class GrafanaAuthTest {
+    private static final String GRAFANA_URL = "https://localhost:3000"; // Change this to your Grafana URL
+    private static final String API_TOKEN = "your-api-token-here"; // Replace with your API token
+    private static final boolean IGNORE_SSL = true; // Set to false if you want to use proper SSL verification
+
+    public static void main(String[] args) {
+        try {
+            HttpClient client;
+            if (IGNORE_SSL) {
+                // Create a trust manager that does not validate certificate chains
+                TrustManager[] trustAllCerts = new TrustManager[]{
+                    new X509TrustManager() {
+                        public X509Certificate[] getAcceptedIssuers() {
+                            return null;
+                        }
+                        public void checkClientTrusted(X509Certificate[] certs, String authType) {
+                        }
+                        public void checkServerTrusted(X509Certificate[] certs, String authType) {
+                        }
+                    }
+                };
+
+                // Install the all-trusting trust manager
+                SSLContext sslContext = SSLContext.getInstance("TLS");
+                sslContext.init(null, trustAllCerts, new java.security.SecureRandom());
+
+                // Create HttpClient with custom SSL context
+                client = HttpClient.newBuilder()
+                    .sslContext(sslContext)
+                    .sslParameters(new SSLParameters())
+                    .build();
+            } else {
+                // Use default SSL verification
+                client = HttpClient.newHttpClient();
+            }
+
+            // Create HTTP Request with Bearer token
+            HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(GRAFANA_URL + "/api/dashboards/home"))
+                .header("Authorization", "Bearer " + API_TOKEN)
+                .header("Accept", "application/json")
+                .GET()
+                .build();
+
+            // Send request and get response
+            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+
+            // Print response details
+            System.out.println("Status Code: " + response.statusCode());
+            System.out.println("Response Body: " + response.body());
+
+            // Check if authentication was successful
+            if (response.statusCode() == 200) {
+                System.out.println("Authentication successful!");
+            } else {
+                System.out.println("Authentication failed. Status code: " + response.statusCode());
+                System.out.println("Please check your API token and Grafana URL.");
+            }
+
+        } catch (Exception e) {
+            System.err.println("Error occurred: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    // Optional: Method to properly configure SSL with a certificate
+    private static SSLContext createSSLContext(String certificatePath) throws Exception {
+        // This is where you would load your certificate from a file
+        // and create a proper SSLContext with it
+        // For now, this is just a placeholder
+        throw new UnsupportedOperationException("Certificate loading not implemented");
+    }
+}
