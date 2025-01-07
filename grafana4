@@ -1,0 +1,190 @@
+import javax.net.ssl.*;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.security.cert.X509Certificate;
+import java.util.Base64;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.JsonNode;
+
+public class GrafanaAuthTest {
+    private static final String GRAFANA_URL = "https://localhost:3000"; // Change this to your Grafana URL
+    private static final String USERNAME = "your-username"; // Replace with your username
+    private static final String PASSWORD = "your-password"; // Replace with your password
+    private static final boolean IGNORE_SSL = true;
+    private static final ObjectMapper objectMapper = new ObjectMapper();
+
+    public static void main(String[] args) {
+        try {
+            // Create Basic Auth header
+            String auth = USERNAME + ":" + PASSWORD;
+            String encodedAuth = Base64.getEncoder().encodeToString(auth.getBytes());
+            String authHeader = "Basic " + encodedAuth;
+
+            HttpClient client = createHttpClient();
+
+            // Login first
+            if (login(client, authHeader)) {
+                // If login successful, perform the data source query
+                queryDataSource(client, authHeader);
+            }
+
+        } catch (Exception e) {
+            System.err.println("Error occurred: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    private static HttpClient createHttpClient() throws Exception {
+        if (IGNORE_SSL) {
+            TrustManager[] trustAllCerts = new TrustManager[]{
+                new X509TrustManager() {
+                    public X509Certificate[] getAcceptedIssuers() { return null; }
+                    public void checkClientTrusted(X509Certificate[] certs, String authType) {}
+                    public void checkServerTrusted(X509Certificate[] certs, String authType) {}
+                }
+            };
+
+            SSLContext sslContext = SSLContext.getInstance("TLS");
+            sslContext.init(null, trustAllCerts, new java.security.SecureRandom());
+
+            return HttpClient.newBuilder()
+                .sslContext(sslContext)
+                .sslParameters(new SSLParameters())
+                .build();
+        }
+        return HttpClient.newHttpClient();
+    }
+
+    private static boolean login(HttpClient client, String authHeader) throws Exception {
+        HttpRequest loginRequest = HttpRequest.newBuilder()
+            .uri(URI.create(GRAFANA_URL + "/api/auth/login"))
+            .header("Authorization", authHeader)
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(
+                String.format("{\"user\":\"%s\",\"password\":\"%s\"}", USERNAME, PASSWORD)
+            ))
+            .build();
+
+        HttpResponse<String> response = client.send(loginRequest, HttpResponse.BodyHandlers.ofString());
+        System.out.println("Login Status Code: " + response.statusCode());
+        
+        return response.statusCode() == 200;
+    }
+
+    private static void queryDataSource(HttpClient client, String authHeader) throws Exception {
+        // Example query payload - modify according to your needs
+        String queryPayload = """
+            {
+                "queries": [
+                    {
+                        "refId": "A",
+                        "datasource": {
+                            "type": "prometheus",
+                            "uid": "your-datasource-uid"
+                        },
+                        "expr": "up",
+                        "instant": true
+                    }
+                ],
+                "range": {
+                    "from": "now-1h",
+                    "to": "now"
+                }
+            }
+            """;
+
+        HttpRequest queryRequest = HttpRequest.newBuilder()
+            .uri(URI.create(GRAFANA_URL + "/api/ds/query"))
+            .header("Authorization", authHeader)
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(queryPayload))
+            .build();
+
+        HttpResponse<String> response = client.send(queryRequest, HttpResponse.BodyHandlers.ofString());
+        System.out.println("Query Status Code: " + response.statusCode());
+
+        if (response.statusCode() == 200) {
+            parseAndStoreResponse(response.body());
+        } else {
+            System.out.println("Query failed. Response: " + response.body());
+        }
+    }
+
+    private static void parseAndStoreResponse(String jsonResponse) throws Exception {
+        JsonNode rootNode = objectMapper.readTree(jsonResponse);
+        List<ServerValue> serverValues = new ArrayList<>();
+
+        // Parse the response and extract values
+        JsonNode results = rootNode.get("results");
+        if (results != null) {
+            results.fields().forEachRemaining(entry -> {
+                JsonNode frames = entry.getValue().get("frames");
+                if (frames != null && frames.isArray()) {
+                    for (JsonNode frame : frames) {
+                        try {
+                            // Extract data based on your response structure
+                            // This is an example - modify according to your actual response structure
+                            JsonNode data = frame.get("data");
+                            JsonNode values = data.get("values");
+                            if (values != null && values.isArray()) {
+                                for (JsonNode value : values) {
+                                    ServerValue serverValue = new ServerValue(
+                                        value.get(0).asLong(),  // timestamp
+                                        value.get(1).asDouble() // value
+                                    );
+                                    serverValues.add(serverValue);
+                                }
+                            }
+                        } catch (Exception e) {
+                            System.err.println("Error parsing frame: " + e.getMessage());
+                        }
+                    }
+                }
+            });
+        }
+
+        // Print the parsed values
+        System.out.println("\nParsed Server Values:");
+        for (ServerValue value : serverValues) {
+            System.out.println(value);
+        }
+
+        // Here you could store the values in a database or file
+        // For example, writing to a file:
+        writeValuesToFile(serverValues);
+    }
+
+    private static void writeValuesToFile(List<ServerValue> values) {
+        // Implement file writing logic here
+        // This is just an example
+        try {
+            StringBuilder content = new StringBuilder();
+            content.append("Timestamp,Value\n");
+            for (ServerValue value : values) {
+                content.append(value.timestamp()).append(",").append(value.value()).append("\n");
+            }
+            java.nio.file.Files.write(
+                java.nio.file.Path.of("server_values.csv"),
+                content.toString().getBytes()
+            );
+            System.out.println("Values written to server_values.csv");
+        } catch (Exception e) {
+            System.err.println("Error writing to file: " + e.getMessage());
+        }
+    }
+}
+
+// Record to store server values
+record ServerValue(long timestamp, double value) {
+    @Override
+    public String toString() {
+        return "Timestamp: " + timestamp + ", Value: " + value;
+    }
+}
