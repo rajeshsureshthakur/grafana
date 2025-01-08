@@ -1,0 +1,110 @@
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.util.Base64;
+import java.util.ArrayList;
+import java.util.List;
+import java.io.FileWriter;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.JsonNode;
+
+public class GrafanaMetricsParser {
+    private static final String GRAFANA_URL = "http://localhost:3000"; // Change this to your Grafana URL
+    private static final String USERNAME = "admin"; // Replace with your username
+    private static final String PASSWORD = "admin"; // Replace with your password
+    private static final String OUTPUT_FILE = "pod_metrics.csv";
+
+    public static void main(String[] args) {
+        try {
+            // Create Basic Auth header
+            String auth = USERNAME + ":" + PASSWORD;
+            String encodedAuth = Base64.getEncoder().encodeToString(auth.getBytes());
+            String authHeader = "Basic " + encodedAuth;
+
+            // Create HTTP Client
+            HttpClient client = HttpClient.newHttpClient();
+
+            // Get the response
+            String response = sendRequest(client, authHeader);
+            
+            // Parse and save to CSV
+            parseAndSaveToCSV(response);
+
+        } catch (Exception e) {
+            System.err.println("Error occurred: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    private static String sendRequest(HttpClient client, String authHeader) throws Exception {
+        HttpRequest request = HttpRequest.newBuilder()
+            .uri(URI.create(GRAFANA_URL + "/api/ds/query"))
+            .header("Authorization", authHeader)
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(getQueryPayload()))
+            .build();
+
+        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+        return response.body();
+    }
+
+    private static String getQueryPayload() {
+        // Add your query payload here
+        return "{}"; // Replace with your actual query
+    }
+
+    private static void parseAndSaveToCSV(String jsonResponse) throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        JsonNode rootNode = mapper.readTree(jsonResponse);
+
+        // Create lists to store the data
+        List<String> podNames = new ArrayList<>();
+        List<Double> values = new ArrayList<>();
+
+        // Extract pod name and value
+        JsonNode schemaNode = rootNode.get("schema");
+        if (schemaNode != null) {
+            // Extract pod name from labels
+            JsonNode labelsNode = schemaNode.path("fields")
+                                          .get(1)  // Second field contains the labels
+                                          .path("labels")
+                                          .path("pod");
+            
+            if (!labelsNode.isMissingNode()) {
+                String podName = labelsNode.asText();
+                podNames.add(podName);
+                
+                // Extract value
+                JsonNode valueNode = rootNode.path("data")
+                                           .path("values")
+                                           .get(1)  // Second array contains the values
+                                           .get(0);  // Get first value
+                
+                if (!valueNode.isMissingNode()) {
+                    values.add(valueNode.asDouble());
+                }
+            }
+        }
+
+        // Write to CSV
+        writeToCSV(podNames, values);
+    }
+
+    private static void writeToCSV(List<String> podNames, List<Double> values) throws Exception {
+        // Create CSV header
+        StringBuilder csv = new StringBuilder();
+        csv.append("Pod Name,Value\n");
+
+        // Add data rows
+        for (int i = 0; i < podNames.size(); i++) {
+            csv.append(String.format("\"%s\",%f\n", podNames.get(i), values.get(i)));
+        }
+
+        // Write to file
+        Files.writeString(Paths.get(OUTPUT_FILE), csv.toString());
+        System.out.println("Data has been written to " + OUTPUT_FILE);
+    }
+}
