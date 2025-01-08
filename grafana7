@@ -1,0 +1,229 @@
+import javax.net.ssl.*;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.security.cert.X509Certificate;
+import java.util.Base64;
+import java.io.FileWriter;
+import java.io.PrintWriter;
+
+public class GrafanaAuthTest {
+    private static final String GRAFANA_URL = "http://localhost:3000"; // Change this to your Grafana URL
+    private static final String USERNAME = "admin"; // Replace with your username
+    private static final String PASSWORD = "admin"; // Replace with your password
+    private static final boolean IGNORE_SSL = true; // Set to false if you want to use proper SSL verification
+    private static final String OUTPUT_FILE = "pod_metrics.csv";
+
+    static class MetricData {
+        String podName;
+        String refId;
+        String timestamp;
+        String value;
+        String labels;
+        String queryString;
+    }
+
+    public static void main(String[] args) {
+        try {
+            // Create Basic Auth header
+            String auth = USERNAME + ":" + PASSWORD;
+            String encodedAuth = Base64.getEncoder().encodeToString(auth.getBytes());
+            String authHeader = "Basic " + encodedAuth;
+
+            // Create HTTP Client
+            HttpClient client = createHttpClient();
+
+            // First attempt login
+            System.out.println("Attempting to login...");
+            if (login(client, authHeader)) {
+                System.out.println("Login successful!");
+                // If login successful, perform the data source query
+                performQuery(client, authHeader);
+            } else {
+                System.out.println("Login failed. Please check your credentials.");
+            }
+
+        } catch (Exception e) {
+            System.err.println("Error occurred: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    private static String extractValue(String json, String key) {
+        key = "\"" + key + "\"";
+        int keyIndex = json.indexOf(key);
+        if (keyIndex == -1) return "";
+        
+        int valueStart = json.indexOf(":", keyIndex) + 1;
+        while (valueStart < json.length() && Character.isWhitespace(json.charAt(valueStart))) {
+            valueStart++;
+        }
+        
+        char firstChar = json.charAt(valueStart);
+        if (firstChar == '"') {
+            int valueEnd = json.indexOf("\"", valueStart + 1);
+            return json.substring(valueStart + 1, valueEnd);
+        } else if (firstChar == '{') {
+            int bracketCount = 1;
+            int valueEnd = valueStart + 1;
+            while (bracketCount > 0 && valueEnd < json.length()) {
+                char c = json.charAt(valueEnd);
+                if (c == '{') bracketCount++;
+                if (c == '}') bracketCount--;
+                valueEnd++;
+            }
+            return json.substring(valueStart, valueEnd);
+        } else {
+            int valueEnd = json.indexOf(",", valueStart);
+            if (valueEnd == -1) {
+                valueEnd = json.indexOf("}", valueStart);
+            }
+            if (valueEnd == -1) {
+                valueEnd = json.length();
+            }
+            return json.substring(valueStart, valueEnd).trim();
+        }
+    }
+
+    private static HttpClient createHttpClient() throws Exception {
+        if (IGNORE_SSL) {
+            TrustManager[] trustAllCerts = new TrustManager[]{
+                new X509TrustManager() {
+                    public X509Certificate[] getAcceptedIssuers() { return null; }
+                    public void checkClientTrusted(X509Certificate[] certs, String authType) {}
+                    public void checkServerTrusted(X509Certificate[] certs, String authType) {}
+                }
+            };
+
+            SSLContext sslContext = SSLContext.getInstance("TLS");
+            sslContext.init(null, trustAllCerts, new java.security.SecureRandom());
+
+            return HttpClient.newBuilder()
+                .sslContext(sslContext)
+                .sslParameters(new SSLParameters())
+                .build();
+        }
+        return HttpClient.newHttpClient();
+    }
+
+    private static boolean login(HttpClient client, String authHeader) throws Exception {
+        HttpRequest loginRequest = HttpRequest.newBuilder()
+            .uri(URI.create(GRAFANA_URL + "/api/auth/login"))
+            .header("Authorization", authHeader)
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(
+                String.format("{\"user\":\"%s\",\"password\":\"%s\"}", USERNAME, PASSWORD)
+            ))
+            .build();
+
+        HttpResponse<String> response = client.send(loginRequest, HttpResponse.BodyHandlers.ofString());
+        System.out.println("Login Status Code: " + response.statusCode());
+        
+        return response.statusCode() == 200;
+    }
+
+    private static MetricData parseResponse(String response) {
+        MetricData metric = new MetricData();
+        
+        try {
+            // Extract refId
+            metric.refId = extractValue(response, "refId");
+
+            // Extract pod name from labels section
+            String labelsSection = extractValue(response, "labels");
+            metric.podName = extractValue(labelsSection, "pod");
+            metric.labels = labelsSection;
+
+            // Extract query string
+            metric.queryString = extractValue(response, "executedQueryString");
+
+            // Extract values array
+            String valuesStr = response.substring(response.indexOf("\"values\""));
+            String[] valuesParts = valuesStr.split("\\[\\[|\\],\\[|\\]\\]");
+            if (valuesParts.length >= 3) {
+                metric.timestamp = valuesParts[1].trim();
+                metric.value = valuesParts[2].trim();
+            }
+
+        } catch (Exception e) {
+            System.err.println("Error parsing response: " + e.getMessage());
+            e.printStackTrace();
+        }
+
+        return metric;
+    }
+
+    private static void saveToCSV(MetricData metric) {
+        try (PrintWriter writer = new PrintWriter(new FileWriter(OUTPUT_FILE))) {
+            // Write header
+            writer.println("Pod Name,RefId,Timestamp,Value,Labels,Query String");
+            
+            // Write data
+            writer.printf("\"%s\",\"%s\",%s,%s,\"%s\",\"%s\"%n",
+                metric.podName,
+                metric.refId,
+                metric.timestamp,
+                metric.value,
+                metric.labels,
+                metric.queryString
+            );
+            
+            // Print to console
+            System.out.println("\nExtracted Data:");
+            System.out.println("Pod Name: " + metric.podName);
+            System.out.println("RefId: " + metric.refId);
+            System.out.println("Timestamp: " + metric.timestamp);
+            System.out.println("Value: " + metric.value);
+            System.out.println("Labels: " + metric.labels);
+            System.out.println("Query: " + metric.queryString);
+            
+            System.out.println("\nData has been written to " + OUTPUT_FILE);
+        } catch (Exception e) {
+            System.err.println("Error saving to CSV: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    private static void performQuery(HttpClient client, String authHeader) throws Exception {
+        // Updated query payload format
+        String queryPayload = "{"
+            + "\"from\": \"now-1h\","
+            + "\"to\": \"now\","
+            + "\"queries\": ["
+            + "    {"
+            + "        \"refId\": \"G\","
+            + "        \"datasource\": {"
+            + "            \"uid\": \"grafana\","  // Replace with your datasource uid
+            + "            \"type\": \"prometheus\""  // Replace with your datasource type
+            + "        },"
+            + "        \"intervalMs\": 60000,"
+            + "        \"maxDataPoints\": 1000,"
+            + "        \"expr\": \"max_over_time(sum(node_namespace_pod_container:container_cpu_usage_seconds_total{pod=\\\"consent-management-3-47-0-84cbf68767-7x8z5\\\"})[5m:1m])\","
+            + "        \"instant\": true"
+            + "    }"
+            + "]"
+            + "}";
+
+        HttpRequest queryRequest = HttpRequest.newBuilder()
+            .uri(URI.create(GRAFANA_URL + "/api/ds/query"))
+            .header("Authorization", authHeader)
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(queryPayload))
+            .build();
+
+        HttpResponse<String> response = client.send(queryRequest, HttpResponse.BodyHandlers.ofString());
+        System.out.println("\nQuery Response:");
+        System.out.println("Status Code: " + response.statusCode());
+        
+        if (response.statusCode() == 200) {
+            System.out.println("Query successful!");
+            MetricData metric = parseResponse(response.body());
+            saveToCSV(metric);
+        } else {
+            System.out.println("Query failed. Response: " + response.body());
+        }
+    }
+}
