@@ -1,7 +1,9 @@
+import javax.net.ssl.*;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.security.cert.X509Certificate;
 import java.util.Base64;
 import java.util.ArrayList;
 import java.util.List;
@@ -13,6 +15,7 @@ public class GrafanaAuthTest {
     private static final String USERNAME = "admin";
     private static final String PASSWORD = "admin";
     private static final String OUTPUT_FILE = "pod_metrics.csv";
+    private static final boolean IGNORE_SSL = true;
 
     // Simple class to hold pod data
     static class PodMetric {
@@ -31,7 +34,8 @@ public class GrafanaAuthTest {
             String encodedAuth = Base64.getEncoder().encodeToString(auth.getBytes());
             String authHeader = "Basic " + encodedAuth;
 
-            HttpClient client = HttpClient.newHttpClient();
+            // Create HTTP Client with SSL handling
+            HttpClient client = createHttpClient();
 
             // First test the login
             if (login(client, authHeader)) {
@@ -44,10 +48,32 @@ public class GrafanaAuthTest {
         }
     }
 
+    private static HttpClient createHttpClient() throws Exception {
+        if (IGNORE_SSL) {
+            TrustManager[] trustAllCerts = new TrustManager[]{
+                new X509TrustManager() {
+                    public X509Certificate[] getAcceptedIssuers() { return null; }
+                    public void checkClientTrusted(X509Certificate[] certs, String authType) {}
+                    public void checkServerTrusted(X509Certificate[] certs, String authType) {}
+                }
+            };
+
+            SSLContext sslContext = SSLContext.getInstance("TLS");
+            sslContext.init(null, trustAllCerts, new java.security.SecureRandom());
+
+            return HttpClient.newBuilder()
+                .sslContext(sslContext)
+                .sslParameters(new SSLParameters())
+                .build();
+        }
+        return HttpClient.newHttpClient();
+    }
+
     private static boolean login(HttpClient client, String authHeader) throws Exception {
         HttpRequest loginRequest = HttpRequest.newBuilder()
             .uri(URI.create(GRAFANA_URL + "/api/auth/login"))
             .header("Authorization", authHeader)
+            .header("Accept", "application/json")
             .header("Content-Type", "application/json")
             .POST(HttpRequest.BodyPublishers.ofString(
                 String.format("{\"user\":\"%s\",\"password\":\"%s\"}", USERNAME, PASSWORD)
@@ -55,11 +81,12 @@ public class GrafanaAuthTest {
             .build();
 
         HttpResponse<String> response = client.send(loginRequest, HttpResponse.BodyHandlers.ofString());
+        System.out.println("Login Status Code: " + response.statusCode());
+        
         return response.statusCode() == 200;
     }
 
     private static void performQuery(HttpClient client, String authHeader) throws Exception {
-        // Your existing query payload
         String queryPayload = "{"
             + "\"from\": \"now-1h\","
             + "\"to\": \"now\","
@@ -70,6 +97,8 @@ public class GrafanaAuthTest {
             + "            \"uid\": \"grafana\","
             + "            \"type\": \"prometheus\""
             + "        },"
+            + "        \"intervalMs\": 60000,"
+            + "        \"maxDataPoints\": 1000,"
             + "        \"expr\": \"max_over_time(sum(node_namespace_pod_container:container_cpu_usage_seconds_total)[5m:1m])\","
             + "        \"instant\": true"
             + "    }"
@@ -85,6 +114,8 @@ public class GrafanaAuthTest {
             .build();
 
         HttpResponse<String> response = client.send(queryRequest, HttpResponse.BodyHandlers.ofString());
+        System.out.println("\nQuery Response:");
+        System.out.println("Status Code: " + response.statusCode());
         
         if (response.statusCode() == 200) {
             List<PodMetric> metrics = parseResponse(response.body());
@@ -135,6 +166,7 @@ public class GrafanaAuthTest {
             }
         } catch (Exception e) {
             System.err.println("Error parsing response: " + e.getMessage());
+            e.printStackTrace();
         }
         return metrics;
     }
