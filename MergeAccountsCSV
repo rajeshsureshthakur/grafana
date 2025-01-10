@@ -1,0 +1,111 @@
+import java.io.*;
+import java.util.*;
+
+public class CSVMerger {
+    // Class to store server metrics
+    static class ServerMetrics {
+        String serverName;
+        Double maxCPU;
+        Double avgCPU;
+        Double maxHeap;
+        Double avgHeap;
+
+        public ServerMetrics(String serverName) {
+            this.serverName = serverName;
+            this.maxCPU = null;
+            this.avgCPU = null;
+            this.maxHeap = null;
+            this.avgHeap = null;
+        }
+    }
+
+    public static void main(String[] args) {
+        // File paths - update these with your actual file paths
+        String maxCPUFile = "MAX_CPU.csv";
+        String maxHeapFile = "MAX_HEAP.csv";
+        String avgCPUFile = "AVG_CPU.csv";
+        String avgHeapFile = "AVG_HEAP.csv";
+        String outputFile = "merged_metrics.csv";
+
+        // Map to store server metrics
+        Map<String, ServerMetrics> serverMetricsMap = new HashMap<>();
+
+        try {
+            // Process all input files
+            processFile(maxCPUFile, serverMetricsMap, "maxCPU");
+            processFile(maxHeapFile, serverMetricsMap, "maxHeap");
+            processFile(avgCPUFile, serverMetricsMap, "avgCPU");
+            processFile(avgHeapFile, serverMetricsMap, "avgHeap");
+
+            // Write merged data to output file
+            writeMergedData(outputFile, serverMetricsMap);
+
+            System.out.println("Files merged successfully!");
+
+        } catch (IOException e) {
+            System.err.println("Error processing files: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    private static void processFile(String filename, Map<String, ServerMetrics> metricsMap, String metricType) throws IOException {
+        try (BufferedReader br = new BufferedReader(new FileReader(filename))) {
+            String line;
+            // Skip header line
+            br.readLine();
+            
+            while ((line = br.readLine()) != null) {
+                String[] values = line.split(",");
+                if (values.length >= 3) {
+                    String serverName = values[0].trim();
+                    try {
+                        double metricValue = Double.parseDouble(values[2].trim());
+                        
+                        ServerMetrics metrics = metricsMap.computeIfAbsent(
+                            serverName, k -> new ServerMetrics(serverName));
+                        
+                        // Set the appropriate metric based on the file type
+                        switch (metricType) {
+                            case "maxCPU":
+                                metrics.maxCPU = metricValue;
+                                break;
+                            case "avgCPU":
+                                metrics.avgCPU = metricValue;
+                                break;
+                            case "maxHeap":
+                                metrics.maxHeap = metricValue;
+                                break;
+                            case "avgHeap":
+                                metrics.avgHeap = metricValue;
+                                break;
+                        }
+                    } catch (NumberFormatException e) {
+                        System.err.println("Invalid value for server " + serverName + " in file " + filename);
+                    }
+                }
+            }
+        }
+    }
+
+    private static void writeMergedData(String outputFile, Map<String, ServerMetrics> metricsMap) throws IOException {
+        try (BufferedWriter bw = new BufferedWriter(new FileWriter(outputFile))) {
+            // Write header
+            bw.write("Server Name,MAX CPU,Average CPU,MAX Heap,Average Heap\n");
+            
+            // Write data for each server
+            for (ServerMetrics metrics : metricsMap.values()) {
+                String maxCPUStr = metrics.maxCPU != null ? String.valueOf(metrics.maxCPU) : "";
+                String avgCPUStr = metrics.avgCPU != null ? String.valueOf(metrics.avgCPU) : "";
+                String maxHeapStr = metrics.maxHeap != null ? String.valueOf(metrics.maxHeap) : "";
+                String avgHeapStr = metrics.avgHeap != null ? String.valueOf(metrics.avgHeap) : "";
+                
+                bw.write(String.format("%s,%s,%s,%s,%s\n", 
+                    metrics.serverName,
+                    maxCPUStr,
+                    avgCPUStr,
+                    maxHeapStr,
+                    avgHeapStr));
+            }
+        }
+    }
+}
